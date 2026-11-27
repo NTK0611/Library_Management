@@ -7,6 +7,10 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ============================================================================
+// ENUMS
+// ============================================================================
+
 enum Role {
   STUDENT
   LECTURER
@@ -14,103 +18,356 @@ enum Role {
   MANAGER
 }
 
-enum BorrowStatus {
+enum UserStatus {
+  ACTIVE
+  LOCKED
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  BORROWED
+  RESERVED
+  LOST
+  MAINTENANCE
+}
+
+enum ConditionStatus {
+  GOOD
+  DAMAGED
+  LOST
+}
+
+enum BorrowDetailStatus {
   BORROWED
   RETURNED
   OVERDUE
+  LOST
+}
+
+enum FineReason {
+  OVERDUE
+  DAMAGED
+  LOST
 }
 
 enum ReservationStatus {
   PENDING
+  READY
   FULFILLED
   CANCELLED
   EXPIRED
 }
 
+enum SettingValueType {
+  NUMBER
+  STRING
+  BOOLEAN
+}
+
+enum NotificationType {
+  DUE_SOON
+  OVERDUE
+  RESERVATION_READY
+  RESERVATION_EXPIRED
+}
+
+enum NotificationStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
+// ============================================================================
+// 14 MODELS (12 Core Entities + 2 Pure Junction Tables: BookCategory, BookAuthor)
+// ============================================================================
+
+/// 1. Người dùng (Student, Lecturer, Librarian, Manager)
 model User {
-  id            String         @id @default(uuid())
-  email         String         @unique
-  password      String
-  fullName      String
-  phone         String?
-  role          Role           @default(STUDENT)
-  isActive      Boolean        @default(true)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  borrowRecords BorrowRecord[]
-  reservations  Reservation[]
-  fines         Fine[]
+  id                 String            @id @default(uuid()) @map("user_id")
+  email              String            @unique @db.VarChar(150)
+  password           String            @db.VarChar(255)
+  fullName           String            @map("full_name") @db.VarChar(150)
+  phone              String?           @db.VarChar(20)
+  studentOrStaffCode String?           @unique @map("student_or_staff_code") @db.VarChar(50)
+  address            String?           @db.VarChar(255)
+  avatarUrl          String?           @map("avatar_url") @db.VarChar(500)
+  role               Role              @default(STUDENT)
+  status             UserStatus        @default(ACTIVE)
+  isActive           Boolean           @default(true) @map("is_active")
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  borrowRecordsAsBorrower  BorrowRecord[]    @relation("BorrowerRecords")
+  borrowRecordsAsLibrarian BorrowRecord[]    @relation("LibrarianRecords")
+  reservations             Reservation[]
+  fines                    Fine[]            @relation("UserFines")
+  collectedFines           Fine[]            @relation("CollectedFines")
+  auditLogs                AuditLog[]
+  notificationLogs         NotificationLog[]
+  updatedSettings          LibrarySetting[]  @relation("SettingUpdater")
+
+  @@index([role])
+  @@index([status])
+  @@index([fullName])
+  @@map("users")
 }
 
-model Book {
-  id             String         @id @default(uuid())
-  title          String
-  isbn           String         @unique
-  description    String?
-  coverImage     String?
-  totalCopies    Int            @default(1)
-  availableCopies Int           @default(1)
-  publishedYear  Int?
-  categoryId     String
-  authorId       String
-  category       Category       @relation(fields: [categoryId], references: [id])
-  author         Author         @relation(fields: [authorId], references: [id])
-  borrowRecords  BorrowRecord[]
-  reservations   Reservation[]
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-}
-
+/// 2. Thể loại sách (N-N với Book qua BookCategory)
 model Category {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  slug        String   @unique
-  description String?
-  books       Book[]
+  id             String         @id @default(uuid()) @map("category_id")
+  name           String         @unique @db.VarChar(100)
+  slug           String         @unique @db.VarChar(120)
+  description    String?        @db.Text
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  bookCategories BookCategory[]
+
+  @@map("categories")
 }
 
+/// 3. Bảng trung gian Sách - Thể loại (N-N)
+model BookCategory {
+  bookId     String   @map("book_id")
+  categoryId String   @map("category_id")
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+
+  book     Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@id([bookId, categoryId])
+  @@index([categoryId])
+  @@map("book_categories")
+}
+
+/// 4. Tác giả (N-N với Book qua BookAuthor)
 model Author {
-  id    String @id @default(uuid())
-  name  String
-  bio   String?
-  books Book[]
+  id          String       @id @default(uuid()) @map("author_id")
+  name        String       @db.VarChar(150)
+  bio         String?      @db.Text
+  nationality String?      @db.VarChar(100)
+  birthYear   Int?         @map("birth_year")
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  bookAuthors BookAuthor[]
+
+  @@index([name])
+  @@map("authors")
 }
 
+/// 5. Bảng trung gian Sách - Tác giả (N-N)
+model BookAuthor {
+  bookId     String   @map("book_id")
+  authorId   String   @map("author_id")
+  assignedAt DateTime @default(now()) @map("assigned_at") @db.Timestamptz(3)
+
+  book   Book   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  author Author @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@id([bookId, authorId])
+  @@index([authorId])
+  @@map("book_authors")
+}
+
+/// 6. Đầu sách (hỗ trợ Soft Delete với isDeleted)
+model Book {
+  id            String         @id @default(uuid()) @map("book_id")
+  isbn          String         @unique @db.VarChar(20)
+  title         String         @db.VarChar(255)
+  description   String?        @db.Text
+  publisher     String?        @db.VarChar(150)
+  publishYear   Int?           @map("publish_year")
+  language      String         @default("Tiếng Việt") @db.VarChar(50)
+  pages         Int?
+  coverImageUrl String?        @map("cover_image_url") @db.VarChar(500)
+  isDeleted     Boolean        @default(false) @map("is_deleted")
+  deletedAt     DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  bookCategories BookCategory[]
+  bookAuthors    BookAuthor[]
+  copies         BookCopy[]
+  reservations   Reservation[]
+
+  @@index([title])
+  @@index([publishYear])
+  @@index([language])
+  @@index([isDeleted])
+  @@map("books")
+}
+
+/// 7. Bản sao sách vật lý có barcode (hỗ trợ Soft Delete với isDeleted)
+model BookCopy {
+  id                 String             @id @default(uuid()) @map("copy_id")
+  bookId             String             @map("book_id")
+  barcode            String             @unique @db.VarChar(50)
+  shelfLocation      String?            @map("shelf_location") @db.VarChar(50)
+  availabilityStatus AvailabilityStatus @default(AVAILABLE) @map("availability_status")
+  conditionStatus    ConditionStatus    @default(GOOD) @map("condition_status")
+  acquiredAt         DateTime           @default(now()) @map("acquired_at") @db.Timestamptz(3)
+  notes              String?            @db.Text
+  isDeleted          Boolean            @default(false) @map("is_deleted")
+  deletedAt          DateTime?          @map("deleted_at") @db.Timestamptz(3)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  book          Book           @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  borrowDetails BorrowDetail[]
+  reservations  Reservation[]
+
+  @@index([bookId])
+  @@index([availabilityStatus])
+  @@index([conditionStatus])
+  @@index([isDeleted])
+  @@map("book_copies")
+}
+
+/// 8. Phiếu mượn (Header)
 model BorrowRecord {
-  id            String       @id @default(uuid())
-  userId        String
-  bookId        String
-  borrowDate    DateTime     @default(now())
-  dueDate       DateTime
-  returnDate    DateTime?
-  status        BorrowStatus @default(BORROWED)
-  createdAt     DateTime     @default(now())
-  user          User         @relation(fields: [userId], references: [id])
-  book          Book         @relation(fields: [bookId], references: [id])
-  fine          Fine?
+  id          String         @id @default(uuid()) @map("borrow_record_id")
+  borrowerId  String         @map("borrower_id")
+  librarianId String         @map("librarian_id")
+  borrowDate  DateTime       @default(now()) @map("borrow_date") @db.Timestamptz(3)
+  notes       String?        @db.Text
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  borrower  User           @relation("BorrowerRecords", fields: [borrowerId], references: [id], onDelete: Restrict)
+  librarian User           @relation("LibrarianRecords", fields: [librarianId], references: [id], onDelete: Restrict)
+  details   BorrowDetail[]
+
+  @@index([borrowerId])
+  @@index([librarianId])
+  @@index([borrowDate])
+  @@map("borrow_records")
 }
 
-model Reservation {
-  id         String            @id @default(uuid())
-  userId     String
-  bookId     String
-  reservedAt DateTime          @default(now())
-  expiresAt  DateTime
-  status     ReservationStatus @default(PENDING)
-  user       User              @relation(fields: [userId], references: [id])
-  book       Book              @relation(fields: [bookId], references: [id])
+/// 9. Chi tiết phiếu mượn (từng cuốn sách vật lý)
+model BorrowDetail {
+  id              String             @id @default(uuid()) @map("borrow_detail_id")
+  borrowRecordId  String             @map("borrow_record_id")
+  copyId          String             @map("copy_id")
+  dueDate         DateTime           @map("due_date") @db.Timestamptz(3)
+  returnDate      DateTime?          @map("return_date") @db.Timestamptz(3)
+  renewalCount    Int                @default(0) @map("renewal_count")
+  status          BorrowDetailStatus @default(BORROWED)
+  returnCondition ConditionStatus?   @map("return_condition")
+  notes           String?            @db.Text
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  borrowRecord BorrowRecord @relation(fields: [borrowRecordId], references: [id], onDelete: Cascade)
+  copy         BookCopy     @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  fines        Fine[]
+
+  @@index([borrowRecordId])
+  @@index([copyId])
+  @@index([returnDate])
+  @@index([dueDate])
+  @@index([status])
+  @@map("borrow_details")
 }
 
+/// 10. Khoản phạt (trễ hạn, hư hỏng, mất sách)
 model Fine {
-  id            String       @id @default(uuid())
-  borrowRecordId String       @unique
-  userId        String
-  amount        Decimal      @db.Decimal(10, 2)
-  reason        String
-  isPaid        Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-  paidAt        DateTime?
-  borrowRecord  BorrowRecord @relation(fields: [borrowRecordId], references: [id])
-  user          User         @relation(fields: [userId], references: [id])
+  id             String     @id @default(uuid()) @map("fine_id")
+  borrowDetailId String     @map("borrow_detail_id")
+  userId         String     @map("user_id")
+  amount         Decimal    @db.Decimal(10, 2)
+  reason         FineReason
+  description    String?    @db.Text
+  isPaid         Boolean    @default(false) @map("is_paid")
+  paidAt         DateTime?  @map("paid_at") @db.Timestamptz(3)
+  collectedById  String?    @map("collected_by_id")
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  borrowDetail BorrowDetail @relation(fields: [borrowDetailId], references: [id], onDelete: Restrict)
+  user         User         @relation("UserFines", fields: [userId], references: [id], onDelete: Restrict)
+  collectedBy  User?        @relation("CollectedFines", fields: [collectedById], references: [id], onDelete: SetNull)
+
+  @@index([userId, isPaid])
+  @@index([borrowDetailId])
+  @@map("fines")
 }
 
+/// 11. Đặt trước đầu sách (hàng đợi FIFO)
+model Reservation {
+  id          String            @id @default(uuid()) @map("reservation_id")
+  userId      String            @map("user_id")
+  bookId      String            @map("book_id")
+  copyId      String?           @map("copy_id")
+  status      ReservationStatus @default(PENDING)
+  reservedAt  DateTime          @default(now()) @map("reserved_at") @db.Timestamptz(3)
+  readyAt     DateTime?         @map("ready_at") @db.Timestamptz(3)
+  expiresAt   DateTime?         @map("expires_at") @db.Timestamptz(3)
+  fulfilledAt DateTime?         @map("fulfilled_at") @db.Timestamptz(3)
+  cancelledAt DateTime?         @map("cancelled_at") @db.Timestamptz(3)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  book Book      @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  copy BookCopy? @relation(fields: [copyId], references: [id], onDelete: SetNull)
+
+  @@index([bookId, status, createdAt])
+  @@index([userId, status])
+  @@index([copyId])
+  @@map("reservations")
+}
+
+/// 12. Quy định thư viện (Key-Value động)
+model LibrarySetting {
+  key         String           @id @db.VarChar(100)
+  value       String           @db.VarChar(255)
+  valueType   SettingValueType @default(NUMBER) @map("value_type")
+  description String?          @db.Text
+  updatedById String?          @map("updated_by_id")
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  updatedBy User? @relation("SettingUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("library_settings")
+}
+
+/// 13. Nhật ký thao tác hệ thống (Audit Trail)
+model AuditLog {
+  id         String   @id @default(uuid()) @map("audit_log_id")
+  userId     String?  @map("user_id")
+  action     String   @db.VarChar(100)
+  entityType String   @map("entity_type") @db.VarChar(100)
+  entityId   String?  @map("entity_id") @db.VarChar(100)
+  details    Json?
+  ipAddress  String?  @map("ip_address") @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// 14. Lịch sử gửi email nhắc nhở (chống gửi trùng theo type + refId + periodKey)
+model NotificationLog {
+  id             String             @id @default(uuid()) @map("notification_log_id")
+  userId         String             @map("user_id")
+  type           NotificationType
+  refId          String             @map("ref_id") @db.VarChar(100)
+  periodKey      String             @map("period_key") @db.VarChar(50)
+  recipientEmail String             @map("recipient_email") @db.VarChar(150)
+  subject        String             @db.VarChar(255)
+  status         NotificationStatus @default(SENT)
+  errorMessage   String?            @map("error_message") @db.Text
+  sentAt         DateTime           @default(now()) @map("sent_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([type, refId, periodKey])
+  @@index([userId, sentAt])
+  @@map("notification_logs")
+}
